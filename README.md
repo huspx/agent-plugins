@@ -6,7 +6,7 @@
 
 | 插件 | 用途 | 兼容版本 |
 | --- | --- | --- |
-| [omp-magpie](plugins/omp-magpie/README.md) | Magpie 原生用量、API-key 登录与 provider 配置 | OMP >=18.4.1；运行验收版本 18.12.6 |
+| [omp-magpie](plugins/omp-magpie/README.md) | Magpie 原生额度、Key 预算、重置券库存、API-key 登录与 provider 配置 | OMP >=18.4.4；运行验收版本 18.12.6 |
 
 ## 安装
 

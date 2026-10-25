@@ -1,14 +1,14 @@
 {
   "name": "omp-magpie",
-  "version": "0.1.0",
-  "description": "Magpie 原生 OMP 用量集成",
+  "version": "0.1.1",
+  "description": "Magpie 原生 OMP 额度、Key 预算与重置券库存集成",
   "type": "module",
   "license": "MIT",
   "author": "huspx",
   "files": ["src", "README.md", "CHANGELOG.md", "LICENSE"],
   "peerDependencies": {
-    "@oh-my-pi/pi-coding-agent": ">=18.4.1",
-    "@oh-my-pi/pi-ai": ">=18.4.1"
+    "@oh-my-pi/pi-coding-agent": ">=18.4.4",
+    "@oh-my-pi/pi-ai": ">=18.4.4"
   },
   "peerDependenciesMeta": {
     "@oh-my-pi/pi-coding-agent": {"optional": true},

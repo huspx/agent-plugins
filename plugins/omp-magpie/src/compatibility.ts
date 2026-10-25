@@ -1,4 +1,4 @@
-export const MIN_OMP_VERSION = "18.4.1";
+export const MIN_OMP_VERSION = "18.4.4";
 export const VERIFIED_OMP_VERSION = "18.12.6";
 
 const stableVersion = /^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;

@@ -25,6 +25,8 @@ export async function startFixture() {
   const resultWaiters = new Map();
   let sequence = 0;
   let holdKey;
+  let holdEndpoint;
+  let holdPrefix;
   const modelHolds = new Map();
   const missingPrices = new Set();
   const identityFailures = new Set();
@@ -56,10 +58,15 @@ export async function startFixture() {
           heldRequests: pending.filter(item => !item.res.destroyed).map(({ row }) => ({ path: row.path, credential: row.credential })),
           aborted: requests.filter(row => row.aborted).length,
           generationPosts: requests.filter(row => row.generation).length,
-          requests: requests.map(({ path, credential, generation, aborted, priceHeader, marker }) => ({ path, credential, generation, aborted, priceHeader, marker })) });
+          requests: requests.map(({ path, query, credential, generation, aborted, priceHeader, marker }) => ({ path, query, credential, generation, aborted, priceHeader, marker })) });
         return;
       }
-      if (url.pathname === '/__smoke/hold') { holdKey = url.searchParams.get('key') || undefined; json(res, { ok: true }); return; }
+      if (url.pathname === '/__smoke/hold') {
+        holdKey = url.searchParams.get('key') || undefined;
+        holdEndpoint = url.searchParams.get('endpoint') || undefined;
+        holdPrefix = url.searchParams.get('prefix') || undefined;
+        json(res, { ok: true }); return;
+      }
       if (url.pathname === '/__smoke/hold-models') { modelHolds.set(url.searchParams.get('key') || '*', url.searchParams.get('prefix') || ''); json(res, { ok: true }); return; }
       if (url.pathname === '/__smoke/catalog') {
         const identity = `${url.searchParams.get('prefix') || ''}:${url.searchParams.get('key') || '*'}`;
@@ -74,7 +81,7 @@ export async function startFixture() {
       // 按 key 释放已到达的请求，允许新身份先完成、旧身份后返回，复现过期响应边界。
       if (url.pathname === '/__smoke/release') {
         const key = url.searchParams.get('key');
-        if (!key) { holdKey = undefined; modelHolds.clear(); } else modelHolds.delete(key);
+        if (!key) { holdKey = undefined; holdEndpoint = undefined; holdPrefix = undefined; modelHolds.clear(); } else modelHolds.delete(key);
         for (let index = pending.length - 1; index >= 0; index--) {
           const item = pending[index];
           if (key && item.row.credential !== key) continue;
@@ -85,9 +92,14 @@ export async function startFixture() {
       }
       const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, '');
       const credential = bearer === fixtureKeys.A ? 'A' : bearer === fixtureKeys.B ? 'B' : bearer ? 'unexpected' : 'none';
-      const row = { path: url.pathname, credential, generation: req.method === 'POST', marker: bearer === '__omp_magpie_usage_local__', priceHeader: req.headers['x-magpie-prices'] === '1', aborted: false };
+      const row = { path: url.pathname, query: url.search, credential, generation: req.method === 'POST', marker: bearer === '__omp_magpie_usage_local__', priceHeader: req.headers['x-magpie-prices'] === '1', aborted: false };
       requests.push(row);
       res.on('close', () => { if (!res.writableEnded) row.aborted = true; });
+      const respond = send => {
+        const endpoint = url.pathname.split('/').at(-1);
+        if (holdKey === credential && (!holdEndpoint || holdEndpoint === endpoint) && (!holdPrefix || url.pathname.startsWith(holdPrefix))) pending.push({ res, send, row });
+        else send();
+      };
       if (req.method === 'POST') {
         if (!generationAllowed || !url.pathname.endsWith('/chat/completions')) { json(res, { error: { message: 'fixture rejects generation' } }, 405); return; }
         for await (const _chunk of req) { /* Drain the actual host request. */ }
@@ -120,16 +132,31 @@ export async function startFixture() {
         const send = () => {
           if (url.pathname.startsWith('/ordinary')) { json(res, { error: 'subscription forbidden' }, 403); return; }
           json(res, { object: 'list', data: [
-            { provider: 'office/codex', kind: 'subscription', user: 'fixture-account', alias: 'fixture-alias', plan: 'fixture-plan', from: 'fixture-upstream', balance: '$12.50', windows: [{ name: 'fixture-exhausted-window', used: 100, remaining: 0, resetsAt: resetAt }] },
-            { provider: 'office/other', kind: 'subscription', user: 'fixture-other', windows: [{ name: 'fixture-available-window', used: 20, remaining: 80, resetsAt: resetAt }] },
+            { provider: 'office/codex', kind: 'subscription', user: 'fixture-account', alias: 'fixture-alias', plan: 'fixture-plan', from: 'fixture-upstream', balance: '$12.50',
+              until: '2032-02-03T04:05:06Z', renew: 'auto', lastServedAt: '2030-12-31T01:02:03Z', last: true, readAt: '2031-01-01T00:00:00Z', asOf: '2031-01-01T00:00:00Z',
+              resets: { count: 3, until: '2032-01-01T00:00:00Z', fiveHour: 2, weekly: 1, team: true, byWindow: true, each: [{ window: 'fiveHour', until: '2032-01-01T00:00:00Z' }] },
+              resetsUsed: [{ at: '2030-12-30T00:00:00Z', why: 'hand', windows: 1 }], windows: [
+                { name: 'fixture-exhausted-window', used: 100, remaining: 0, resetsAt: resetAt },
+                { name: 'fixture-text-window', text: true, unlimited: true, display: `fixture text information ${bearer || 'keyless'}\u001b[31m`, used: 0, remaining: 100,
+                  holds: { tokens: 50000, priced: true, cost: 2.5, used: 20, routed: { calls: 4, tokens: 10000, cacheRead: 30, cacheWrite: 5, cost: 0.5 }, since: '2030-12-01T00:00:00Z' } },
+                { name: 'fixture-cny-window', unit: 'CNY', amount: 200, limit: 1000, used: 20, remaining: 80 },
+                { name: 'fixture-pool-window', pool: 'pool-alpha', used: 10, remaining: 90, holdsWhy: 'low' },
+                { name: 'fixture-pool-window', pool: 'pool-beta', used: 20, remaining: 80, holdsWhy: 'clock' },
+              ] },
+            { provider: 'office/other', kind: 'subscription', user: 'fixture-other', renew: 'off', resets: { count: 7, until: '2033-03-04T00:00:00Z' }, windows: [{ name: 'fixture-available-window', used: 20, remaining: 80, resetsAt: resetAt }] },
+            { provider: 'office/idle', user: 'fixture-idle', resets: { count: 0 }, windows: [] },
+            { provider: 'office/stale', user: 'fixture-stale', error: 'fixture-read-error', readDeferred: true, readAt: '2031-05-06T00:00:00Z', asOf: '2031-05-05T00:00:00Z', resets: { count: 4, until: '2034-04-05T00:00:00Z' }, windows: [{ name: 'fixture-stale-window', used: 30, remaining: 70 }] },
           ] });
         };
-        if (holdKey === credential) pending.push({ res, send, row }); else send();
+        respond(send);
         return;
       }
       if (url.pathname.endsWith('/v1/magpie/limit')) {
         const tokens = credential === 'B' ? 222 : 111;
-        json(res, { limited: true, limits: [{ period: 'day', tokenLimit: 1000, tokens, tokensLeft: 1000 - tokens, costLimit: 10, cost: 1.25, costLeft: 8.75, reset: resetAt, reserved: 3, inFlight: 1 }] });
+        respond(() => json(res, { limited: true, limits: [
+          { period: 'day', tokenLimit: 1000, tokens, tokensLeft: 1000 - tokens, costLimit: 10, cost: 1.25, costLeft: 8.75, reset: resetAt, start: '2031-01-01T00:00:00Z', calls: 7, cacheReads: false, spent: false, unpriced: 2, reserved: 3, reservedCost: 0.1, inFlight: 1 },
+          { period: 'week', tokenLimit: 7000, tokens: 333, tokensLeft: 6667, costLimit: 70, cost: 4.5, costLeft: 65.5, reset: resetAt, cacheReads: true, unpriced: 5, reserved: 9, reservedCost: 0.2 },
+        ] }));
         return;
       }
       json(res, { error: 'fixture route not found' }, 404);

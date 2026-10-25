@@ -4,8 +4,8 @@
   "plugins": [
     {
       "name": "omp-magpie",
-      "description": "在标准 OMP 原生用量面板中展示 Magpie 配额与 key 预算",
-      "version": "0.1.0",
+      "description": "在标准 OMP 原生用量面板中展示 Magpie 配额、Key 预算与账号重置券库存",
+      "version": "0.1.1",
       "source": "./plugins/omp-magpie"
     }
   ]

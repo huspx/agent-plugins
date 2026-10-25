@@ -1,5 +1,11 @@
 # 更新记录
 
+## 0.1.1（已发布，2026-10-26）
+
+- omp-magpie 面板生成文案使用英文，修复带身份探测诊断时共享 owner 租约的保留，并收紧凭据切换 smoke 的目标请求屏障。
+- 更新 omp-magpie：展示账号额度、余额、Key 多周期预算和按账号归属的重置券库存，保留真实数值、未知读数及必要诊断。
+- 最低 OMP 版本提升为 18.4.4；支持 Tern Native Details 与宿主 ANSI 回退，开发 SDK 与运行验收仍使用 18.12.6。
+
 ## 0.1.0（已发布，2026-10-25）
 
 - 提供 `huspx-agent-plugins` marketplace 与自包含 MIT 插件 `omp-magpie`。

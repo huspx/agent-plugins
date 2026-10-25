@@ -68,24 +68,37 @@ test("规范 root 的代理 prefix 本身以 v1 结尾时不会被再次剥离",
 	});
 });
 
-test("身份首选失败时在同 prefix fallback，keyless 不发送认证", async () => {
+test("身份首选失败时在同 prefix fallback，keyless 身份和额度均不发送认证", async () => {
 	await fixture((request, response) => {
 		assert.equal(request.headers.authorization, undefined);
 		if (request.url === "/prefix/v1") { response.writeHead(404); response.end("not found"); }
-		else { assert.equal(request.url, "/prefix/api/hello"); json(response, { name: "magpie", version: "fixture" }); }
+		else if (request.url === "/prefix/api/hello") json(response, { name: "magpie", version: "fixture" });
+		else { assert.equal(request.url, "/prefix/v1/magpie/quotas"); json(response, { object: "list", data: [] }); }
 	}, async root => {
 		assert.equal((await identifyGateway(`${root}/prefix`, {})).name, "magpie");
+		assert.deepEqual(await fetchQuotas(`${root}/prefix`, {}), { object: "list", data: [] });
 	});
 });
 
-test("401、403、404 分类且 quota 权限失败不影响独立 key 预算读取", async () => {
-	for (const [status, kind] of [[401, "auth"], [403, "permission"], [404, "not-found"]] as const) {
+test("HTTP 状态优先于响应格式，诊断脱敏且预算仍可读取", async () => {
+	for (const [status, kind] of [[401, "auth"], [403, "permission"], [404, "not-found"], [200, "protocol"]] as const) {
 		await fixture((request, response) => {
 			if (request.url?.endsWith("/limit")) json(response, { limited: true, limits: [{ tokenLimit: 100 }] });
-			else json(response, { error: { code: "fixture-key\nCODE", message: "fixture-key" } }, status);
+			else if (status === 401) json(response, { error: { code: "fixture-key\nCODE", message: "fixture-key" } }, status);
+			else { response.writeHead(status); response.end("<html>private body</html>"); }
 		}, async root => {
-			await assert.rejects(fetchQuotas(root, { apiKey: "fixture-key" }), error => hasKind(kind, status)(error) && error instanceof GatewayError && !error.message.includes("fixture-key") && error.code === "[已隐藏]CODE");
-			assert.deepEqual(await fetchKeyLimits(root, { apiKey: "fixture-key" }), { limited: true, limits: [{ tokenLimit: 100 }] });
+			await assert.rejects(fetchQuotas(root, { apiKey: "fixture-key" }), error => {
+				assert.ok(error instanceof GatewayError);
+				assert.equal(error.kind, kind);
+				if (status !== 200) assert.equal(error.status, status);
+				assert.doesNotMatch(error.message, /fixture-key|private body/);
+				if (status === 401) {
+					assert.match(error.code!, /CODE/);
+					assert.doesNotMatch(error.code!, /fixture-key|[\r\n]/);
+				}
+				return true;
+			});
+			if (status === 403) assert.deepEqual(await fetchKeyLimits(root, { apiKey: "fixture-key" }), { limited: true, limits: [{ tokenLimit: 100 }] });
 		});
 	}
 });
@@ -115,8 +128,8 @@ test("caller 取消真实 HTTP 请求，身份请求有独立两秒超时", asyn
 		const controller = new AbortController();
 		const pending = fetchQuotas(root, {}, controller.signal);
 		controller.abort();
-		await assert.rejects(pending, error => error instanceof GatewayError && error.kind === "network" && error.message.includes("取消"));
-		await assert.rejects(identifyGateway(root, {}), error => error instanceof GatewayError && error.kind === "network" && error.message.includes("超时"));
+		await assert.rejects(pending, error => error instanceof GatewayError && error.kind === "network" && error.message.includes("cancelled"));
+		await assert.rejects(identifyGateway(root, {}), error => error instanceof GatewayError && error.kind === "network" && error.message.includes("timed out"));
 	});
 });
 
@@ -128,7 +141,9 @@ test("宿主传输失败保留网络分类但不暴露原始异常中的凭据�
 });
 
 test("诊断去除控制字符与有效 key", () => {
-	assert.equal(sanitizeDiagnostic("bad\nfixture-key\u001b", "fixture-key"), "bad[已隐藏]");
-	assert.equal(sanitizeDiagnostic("fix\nture-key", "fixture-key"), "[已隐藏]");
+	const redacted = sanitizeDiagnostic("bad\nfixture-key\u001b", "fixture-key");
+	assert.match(redacted, /^bad/);
+	assert.doesNotMatch(redacted, /fixture-key|[\u0000-\u001f\u007f-\u009f]/);
+	assert.doesNotMatch(sanitizeDiagnostic("fix\nture-key", "fixture-key"), /fixture-key|[\u0000-\u001f\u007f-\u009f]/);
 	assert.equal(sanitizeDiagnostic("bad\r\nvalue"), "badvalue");
 });

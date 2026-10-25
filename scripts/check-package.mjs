@@ -50,7 +50,7 @@ for (const file of ["README.md", "CHANGELOG.md", "LICENSE", ...pkg.omp.extension
 assert(!Object.keys(pkg.dependencies ?? {}).length, "生产包不得依赖外部运行时包");
 assert(!Object.keys(pkg.optionalDependencies ?? {}).length, "生产包不得通过 optionalDependencies 安装运行时包");
 for (const sdk of ["@oh-my-pi/pi-coding-agent", "@oh-my-pi/pi-ai"]) {
-  assert.equal(pkg.peerDependencies?.[sdk], ">=18.4.1", `${sdk} peer 必须声明最低 OMP 18.4.1`);
+  assert.equal(pkg.peerDependencies?.[sdk], ">=18.4.4", `${sdk} peer 必须声明最低 OMP 18.4.4`);
   assert.equal(pkg.peerDependenciesMeta?.[sdk]?.optional, true, `${sdk} peer 必须为 optional，由宿主提供`);
 }
 
