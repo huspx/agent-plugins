@@ -5,7 +5,7 @@
 - 根 `README.md` 面向插件使用者：插件列表、公开 marketplace 安装和更新入口。
 - `plugins/<插件名>/README.md` 是可独立阅读的使用指南：兼容版本、安装、配置、常见问题和用户需要知道的限制。
 - 本文件面向维护代码的 agent，记录仓库约定和验证方法。README 不放本机绝对路径、临时测试计数、实施进度或内部调研过程。
-- `OMP_MAGPIE_PLAN.md` 是可选的本地实施资料，不提交到公开仓库，不作为干净 checkout 的必需上下文。
+- 文档只引用纳入版本控制且随仓库分发的资料；本地未跟踪或被忽略的文件不作为文档依据或必需上下文。
 
 ## 仓库与分发
 
@@ -17,7 +17,7 @@
 
 ## omp-magpie
 
-- 最低支持标准 OMP 18.4.1，允许后续稳定版本加载；开发 SDK 与 standalone 验收仅使用 18.12.6，不声称其他版本已验证。使用公开 ExtensionAPI 和宿主导出，不修改 OMP 核心或私有字段。
+- 最低支持标准 OMP 18.4.4，允许后续稳定版本加载；开发 SDK 与 standalone 验收仅使用 18.12.6，不声称其他版本已验证。使用公开 ExtensionAPI 和宿主导出，不修改 OMP 核心或私有字段。
 - 生产模块使用宿主能力与 Node/Bun 内置 API；SDK 类型使用 `import type`，不增加 SDK 运行时依赖或自造类型 stub。
 - 已有 provider 只附加 usage；只有显式 `createProvider:true` 或用户确认原生登录创建时才创建缺失的 provider，不覆盖已有注册，不自动切模型。
 - 保留 gateway 路径前缀、各模型独立 API/URL，以及按 root/provider/key 隔离的用量身份。不同 key 的报告、预算或在途请求不得混用。
@@ -29,7 +29,7 @@
 
 ## 开发与验证
 
-开发环境使用支持原生 TypeScript stripping 的 Node.js（当前 Node 26）和 npm。根 `package.json` 与 lockfile 的开发 SDK 固定为 18.12.6；插件为两个 OMP SDK 声明 `>=18.4.1` 的 optional peer，不新增生产 SDK runtime 依赖。插件运行使用 OMP 内嵌 Bun，不要求安装独立 Bun。
+开发环境使用支持原生 TypeScript stripping 的 Node.js（当前 Node 26）和 npm。根 `package.json` 与 lockfile 的开发 SDK 固定为 18.12.6；插件为两个 OMP SDK 声明 `>=18.4.4` 的 optional peer，不新增生产 SDK runtime 依赖。插件运行使用 OMP 内嵌 Bun，不要求安装独立 Bun。
 
 ```sh
 npm install --ignore-scripts

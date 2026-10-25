@@ -469,11 +469,6 @@ class StoreState {
       // 自动发现不能仅凭地址猜测 Magpie；显式声明允许保留探测诊断，继续由实际额度请求给出结果。
       if (!claims.some(({ claim }) => claim.explicit)) { this.warn(slot, diagnostic); return; }
     }
-    if (diagnostic && previous && slot.binding === previous && this.auth.usage.providerFor(slot.providerId) === slot.adapter) {
-      previous.diagnostic = diagnostic;
-      this.warn(slot, diagnostic);
-      return;
-    }
     if (!diagnostic) {
       // 只有身份正向识别后才创建 provider；多个 owner 共享 registry 时只注册一次。
       const created = new Set<ModelRegistry>();
@@ -490,6 +485,13 @@ class StoreState {
     const current = await Promise.all(claims.map(({ owner, claim }) => this.resolve(slot, owner, claim)));
     if (slot.epoch !== epoch || current.some(value => value.bindingId !== candidate.bindingId || value.owner.signal.aborted)) { slot.pending = true; return; }
     this.eligible(slot);
+    if (diagnostic && previous && slot.binding === previous && this.auth.usage.providerFor(slot.providerId) === slot.adapter) {
+      previous.leases = claims;
+      previous.diagnostic = diagnostic;
+      slot.stamp = this.stamp(slot.providerId);
+      this.warn(slot, diagnostic);
+      return;
+    }
     // 从撤销旧租约到安装 adapter 之间不再 await；先发布完整 binding，宿主安装时才能读到一致快照。
     if (slot.binding) this.revoke(slot);
     const controller = new AbortController();

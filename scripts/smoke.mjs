@@ -123,22 +123,31 @@ async function rpc(isolation, { direct = false } = {}) {
     child.stdin.write(`${JSON.stringify({ id, type, ...fields })}\n`);
     return { id, from };
   }
-  async function usage(expected = true) {
+  async function usage(expected = true, inspectPresentation = false) {
+    const generationBefore = fixture.requests.filter(request => request.generation).length;
+    const trafficFrom = fixture.requests.length;
     const command = await send('prompt', { message: '/usage' });
     const response = await waitFor(value => value.type === 'response' && value.id === command.id, 'same-id /usage response', 45000, command.from);
     assert.equal(response.success, true, safe(JSON.stringify(response)));
     assert.equal(response.data?.agentInvoked, false, 'builtin /usage must report agentInvoked:false');
     const output = await waitFor(value => value.type === 'command_output', '/usage command_output', 10000, command.from);
-    if (expected) {
-      assert.match(output.text, /fixture-account/);
-      assert.match(output.text, /fixture-exhausted-window/);
-      assert.match(output.text, /fixture-available-window/);
-      assert.match(output.text, /reset|重置|2031/i);
-      // Key-backed aliases provide independently fetched budgets in SDK mode;
-      // marketplace also declares one key-backed alias for native text coverage.
-      assert.match(output.text, /预算|budget/i);
+    if (expected) assert.match(output.text, /fixture-alias/, 'installed usage collector remains visible');
+    if (inspectPresentation) {
+      for (const value of ['fixture text information', 'pool-alpha', 'pool-beta', 'fixture-cny-window']) assert(output.text.includes(value), `/usage text preserves fixture value ${value}`);
+      assert.match(output.text, /fixture-alias[^\n]*Reset credits[^\n]*5h\s*2\b[^\n]*Weekly\s*1\b/, 'native /usage renders representative account inventory');
+      assert.match(output.text, /fixture-idle[^\n]*Reset credits[^\n]*\b0\b[^\n]*expiry unknown/, 'native /usage renders windowless zero inventory');
+      assert.match(output.text, /200\s*\/\s*1000\s+cny/i, 'native /usage retains the actual CNY quantity and original unit');
+      assert.match(output.text, /Key Token budget[^\n]*Daily[^\n]*excludes cache reads[^\n]*reservations/);
+      assert.match(output.text, /Key Token budget[^\n]*Weekly[^\n]*includes cache reads[^\n]*reservations/);
+      assert.match(output.text, /Key USD budget[^\n]*Daily[^\n]*2[^\n]*unpriced[^\n]*reservations/);
+      assert.match(output.text, /Key USD budget[^\n]*Weekly[^\n]*5[^\n]*unpriced[^\n]*reservations/);
+      assert.doesNotMatch(output.text, /\p{Script=Han}/u, 'English fixture retains English panel labels and diagnostics');
+      for (const value of ['fixture-plan', 'fixture-upstream']) assert(!output.text.includes(value), `/usage text omits management fixture value ${value}`);
     }
     assert(!JSON.stringify(messages.slice(command.from)).includes(fixtureKeys.A) && !JSON.stringify(messages.slice(command.from)).includes(fixtureKeys.B), 'RPC events must not disclose fixture credentials');
+    assert.equal(fixture.requests.filter(request => request.generation).length, generationBefore, 'each /usage stage must make zero generation POST requests');
+    const traffic = fixture.requests.slice(trafficFrom);
+    assert(traffic.filter(request => request.path.includes('/v1/magpie/')).every(request => /\/v1\/magpie\/(quotas|limit)$/.test(request.path) && !request.generation), 'native /usage management requests only read quotas and key budgets without redemption or model generation');
     passed('builtin /usage command_output and same-id agentInvoked:false response');
     return output.text;
   }
@@ -244,16 +253,20 @@ try {
   await mkdir(join(source, '.omp-plugin'), { recursive: true });
   await cp(join(repository, '.omp-plugin/marketplace.json'), join(source, '.omp-plugin/marketplace.json'));
   await cp(join(repository, 'plugins/omp-magpie'), join(source, 'plugins/omp-magpie'), { recursive: true });
+  const releasePackage = JSON.parse(await readFile(join(source, 'plugins/omp-magpie/package.json'), 'utf8'));
+  const releaseVersion = releasePackage.version;
+  const [major, minor, patch] = releaseVersion.split('.').map(Number);
+  const upgradeVersion = `${major}.${minor}.${patch + 1}`;
   await cli(market, ['plugin', 'marketplace', 'add', source]);
   await cli(market, ['plugin', 'install', pluginId, '--scope', 'user']);
   assert.match(await cli(market, ['plugin', 'list']), /omp-magpie/);
   await cli(market, ['plugin', 'config', 'set', 'omp-magpie', 'autoAttach', 'false']);
   const marketConnections = [{ providerId: 'magpie' }, { providerId: 'smoke-a' }];
   await cli(market, ['plugin', 'config', 'set', 'omp-magpie', 'connections', JSON.stringify(marketConnections)]);
-  await installedPackage(market.home, '0.1.0');
+  await installedPackage(market.home, releaseVersion);
   const beforeGeneration = fixture.requests.filter(request => request.generation).length;
   let client = await rpc(market);
-  await client.usage();
+  await client.usage(true, true);
   await client.runProbe('audit', { installed: true });
   await client.close();
   assert.equal(fixture.requests.filter(request => request.generation).length, beforeGeneration, 'marketplace /usage must make zero generation POST requests');
@@ -261,27 +274,29 @@ try {
 
   const catalogPath = join(source, '.omp-plugin/marketplace.json');
   const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
-  catalog.plugins.find(plugin => plugin.name === 'omp-magpie').version = '0.1.1';
+  catalog.plugins.find(plugin => plugin.name === 'omp-magpie').version = upgradeVersion;
   await writeFile(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
   const packagePath = join(source, 'plugins/omp-magpie/package.json');
   const packageData = JSON.parse(await readFile(packagePath, 'utf8'));
-  packageData.version = '0.1.1';
+  packageData.version = upgradeVersion;
   await writeFile(packagePath, `${JSON.stringify(packageData, null, 2)}\n`);
   const changelog = join(source, 'plugins/omp-magpie/CHANGELOG.md');
-  await writeFile(changelog, `# 0.1.1 smoke upgrade fixture\n\n${await readFile(changelog, 'utf8')}`);
+  await writeFile(changelog, `# ${upgradeVersion} smoke upgrade fixture\n\n${await readFile(changelog, 'utf8')}`);
   await cli(market, ['plugin', 'marketplace', 'update', 'huspx-agent-plugins']);
   await cli(market, ['plugin', 'upgrade', pluginId, '--scope', 'user']);
-  const cached = await installedPackage(market.home, '0.1.1');
-  assert.match(await readFile(join(cached, 'CHANGELOG.md'), 'utf8'), /0\.1\.1 smoke upgrade fixture/);
+  const cached = await installedPackage(market.home, upgradeVersion);
+  assert((await readFile(join(cached, 'CHANGELOG.md'), 'utf8')).includes(`${upgradeVersion} smoke upgrade fixture`));
   const upgradeStart = fixture.requests.length;
   client = await rpc(market);
   await client.usage();
   await client.runProbe('audit', { installed: true });
-  // With one /usage collection, each declared alias gets exactly one effective
-  // quota fetch; duplicate factories cannot masquerade as successful upgrade.
-  for (const prefix of ['/local', '/prefix/a']) assert.equal(fixture.requests.slice(upgradeStart).filter(request => request.path === `${prefix}/v1/magpie/quotas`).length, 1, 'upgrade has one effective attachment per alias');
+  // Every declared alias has one effective collection per endpoint after a
+  // full restart; keyless aliases must never request a key budget.
+  for (const prefix of ['/local', '/prefix/a']) {
+    for (const endpoint of ['quotas', ...(prefix === '/local' ? [] : ['limit'])]) assert.equal(fixture.requests.slice(upgradeStart).filter(request => request.path === `${prefix}/v1/magpie/${endpoint}`).length, 1, `upgrade has one effective ${endpoint} attachment per alias`);
+  }
   await client.close();
-  passed('temporary local marketplace update/upgrade loads 0.1.1 exactly once');
+  passed(`temporary local marketplace update/upgrade loads ${releaseVersion} then ${upgradeVersion} exactly once`);
   await cli(market, ['plugin', 'disable', pluginId]);
   client = await rpc(market);
   await client.usage(false);
@@ -374,7 +389,7 @@ try {
   fixture.allowGeneration(true);
   client = await rpc(sdk, { direct: true });
   await client.usage();
-  for (const action of ['baseline', 'prefix', 'literal', 'provider-root', 'anthropic-roots', 'model-headers', 'stored', 'models', 'aliases']) await client.runProbe(action);
+  for (const action of ['baseline', 'prefix', 'inventory', 'usage-barriers', 'literal', 'provider-root', 'anthropic-roots', 'model-headers', 'stored', 'models', 'aliases']) await client.runProbe(action);
   await client.usage();
   await client.runProbe('select-late');
   await client.promptHook();
@@ -399,6 +414,8 @@ try {
   await client.close();
   passed('created runtime provider disappears after disabled-plugin restart');
   assert(!fixture.requests.some(request => request.marker || request.credential === 'unexpected'), 'all HTTP credentials must belong to the fixture and exclude internal marker');
+  assert(fixture.requests.filter(request => request.path.includes('/v1/magpie/')).every(request => /\/v1\/magpie\/(quotas|limit)$/.test(request.path) && request.query === '' && !request.generation), 'all management traffic is read-only quotas or key budgets');
+  assert(!fixture.requests.some(request => /redeem|exchange|reset-credit|reset_credit/i.test(request.path)), 'inventory display never redeems reset credits');
   passed('all HTTP traffic uses loopback fixture with non-secret credential classifications');
   console.log(`Smoke passed: ${assertionCount} assertions; TUI and future published HTTPS source are separate acceptance steps.`);
 } finally {

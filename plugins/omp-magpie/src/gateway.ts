@@ -20,18 +20,18 @@ export class GatewayError extends Error {
 
 /** 清除终端控制字符并遮蔽已知 key；调用方须传入实际凭据，本方法不会自动识别任意 secret。 */
 export function sanitizeDiagnostic(message: string, apiKey?: string): string {
-	let clean = apiKey ? message.split(apiKey).join("[已隐藏]") : message;
+	let clean = apiKey ? message.split(apiKey).join("[redacted]") : message;
 	clean = clean.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
 	// 同时处理被终端控制字符拆开的凭据。
 	const cleanKey = apiKey?.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
-	return cleanKey ? clean.split(cleanKey).join("[已隐藏]") : clean;
+	return cleanKey ? clean.split(cleanKey).join("[redacted]") : clean;
 }
 
 function gatewayUrl(input: string): URL {
 	let url: URL;
-	try { url = new URL(input); } catch { throw new GatewayError("protocol", "网关地址必须是有效 HTTP/HTTPS URL"); }
+	try { url = new URL(input); } catch { throw new GatewayError("protocol", "Gateway address must be a valid HTTP/HTTPS URL"); }
 	if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash || input.includes("?") || input.includes("#")) {
-		throw new GatewayError("protocol", "网关地址只接受不含 query、fragment 或 userinfo 的 HTTP/HTTPS root");
+		throw new GatewayError("protocol", "Gateway root must use HTTP/HTTPS without query, fragment or userinfo");
 	}
 	return url;
 }
@@ -61,23 +61,23 @@ async function requestJson(root: string, path: string, auth: GatewayAuth, timeou
 		if (!response.ok) {
 			// 分类供上层分别展示账号权限与 key 预算；只提取安全错误码，不输出服务端原始响应。
 			const kind = response.status === 401 ? "auth" : response.status === 403 ? "permission" : response.status === 404 ? "not-found" : "protocol";
-			const description = kind === "auth" ? "网关认证失败" : kind === "permission" ? "没有访问权限" : kind === "not-found" ? "接口不支持" : "网关 HTTP 错误";
+			const description = kind === "auth" ? "gateway authentication failed" : kind === "permission" ? "permission denied" : kind === "not-found" ? "endpoint not supported" : "gateway HTTP error";
 			let code: string | undefined;
 			try {
 				const payload: unknown = await response.json();
 				if (typeof payload === "object" && payload !== null && "error" in payload && typeof payload.error === "object" && payload.error !== null && "code" in payload.error && typeof payload.error.code === "string") code = sanitizeDiagnostic(payload.error.code, auth.apiKey);
 			} catch { /* HTTP 状态优先于错误响应的 JSON 格式。 */ }
-			throw new GatewayError(kind, `${path}：${description}（HTTP ${response.status}）`, response.status, code);
+			throw new GatewayError(kind, `${path}: ${description} (HTTP ${response.status})`, response.status, code);
 		}
 		try { return await response.json(); } catch {
 			if (combined.aborted) throw combined.reason;
-			throw new GatewayError("protocol", `${path}：响应不是有效 JSON`, response.status);
+			throw new GatewayError("protocol", `${path}: response is not valid JSON`, response.status);
 		}
 	} catch (error) {
 		if (error instanceof GatewayError) throw error;
-		const detail = timeoutSignal.aborted && !signal?.aborted ? "请求超时" : signal?.aborted ? "请求已取消" : "网络请求失败";
+		const detail = timeoutSignal.aborted && !signal?.aborted ? "request timed out" : signal?.aborted ? "request cancelled" : "network request failed";
 		// 不转发 fetch 原始异常；其中可能包含地址、headers 或凭据。
-		throw new GatewayError("network", `${path}：${detail}`);
+		throw new GatewayError("network", `${path}: ${detail}`);
 	}
 }
 
@@ -89,14 +89,14 @@ export async function identifyGateway(root: string, auth: GatewayAuth, signal?: 
 	const failures: GatewayError[] = [];
 	// 两个固定接口是产品身份识别协议的顺序回退，不对同一请求额外重试。
 	for (const path of ["/v1", "/api/hello"]) {
-		if (signal?.aborted) throw new GatewayError("network", "网关身份识别已取消");
+		if (signal?.aborted) throw new GatewayError("network", "Gateway identification cancelled");
 		try {
 			const payload = await requestJson(root, path, auth, 2_000, signal, fetchImpl);
 			if (typeof payload === "object" && payload !== null && "name" in payload && payload.name === "magpie" && "version" in payload && typeof payload.version === "string" && payload.version.trim()) {
 				const version = sanitizeDiagnostic(payload.version, auth.apiKey).trim();
 				if (version) return { name: "magpie", version };
 			}
-			throw new GatewayError("protocol", `${path}：响应缺少 Magpie name/version 身份`);
+			throw new GatewayError("protocol", `${path}: response is missing Magpie name/version identity`);
 		} catch (error) {
 			if (!(error instanceof GatewayError)) throw error;
 			failures.push(error);
@@ -104,7 +104,7 @@ export async function identifyGateway(root: string, auth: GatewayAuth, signal?: 
 	}
 	// 常见的探测接口 404 不应掩盖另一个接口返回的认证、权限或协议错误。
 	const primary = failures.find(error => error.kind !== "not-found") ?? failures[0]!;
-	throw new GatewayError(primary.kind, failures.map(error => error.message).join("；"), primary.status, primary.code);
+	throw new GatewayError(primary.kind, failures.map(error => error.message).join("; "), primary.status, primary.code);
 }
 
 /** 读取完整账号额度，不带 kept=1，避免远程转发的账号卡被过滤；沿用管理请求的 8 秒超时。 */
