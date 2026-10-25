@@ -1,0 +1,6 @@
+node_modules/
+*.tgz
+.DS_Store
+
+# 本地实施计划
+/OMP_MAGPIE_PLAN.md

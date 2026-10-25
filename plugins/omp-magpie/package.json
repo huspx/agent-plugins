@@ -1,0 +1,24 @@
+{
+  "name": "omp-magpie",
+  "version": "0.1.0",
+  "description": "Magpie 原生 OMP 用量集成",
+  "type": "module",
+  "license": "MIT",
+  "author": "huspx",
+  "files": ["src", "README.md", "CHANGELOG.md", "LICENSE"],
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": ">=18.4.1",
+    "@oh-my-pi/pi-ai": ">=18.4.1"
+  },
+  "peerDependenciesMeta": {
+    "@oh-my-pi/pi-coding-agent": {"optional": true},
+    "@oh-my-pi/pi-ai": {"optional": true}
+  },
+  "omp": {
+    "extensions": ["./src/index.ts"],
+    "settings": {
+      "autoAttach": {"type": "boolean", "default": true, "description": "识别当前 provider 与已有 magpie 的独立网关连接"},
+      "connections": {"type": "string", "default": "[]", "description": "显式连接的 JSON 数组字符串"}
+    }
+  }
+}
