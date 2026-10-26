@@ -13,6 +13,8 @@
 - 生产源码和运行所需文件只放在插件根内，不从仓库根或兄弟目录导入代码，不携带开发 `node_modules` 或跨目录 symlink。
 - 根 package 只承载开发工具、测试和验收脚本，不声明扩展入口，不新增无关的 workspace 或共享运行时包。
 - 修改插件版本时，同步修改 marketplace entry 和插件 `package.json`，并更新对应 CHANGELOG。
+- 发布 tag 使用 `<插件名>/<版本号>`，例如 `omp-magpie/0.1.1`，版本号不加 `v` 前缀。
+- 开发分支按用途命名：`release/<插件名>/<版本号>`、`feat/<插件名>/<功能>`、`fix/<插件名>/<问题>`；例如 `release/omp-magpie/0.1.2`、`feat/omp-magpie/usage`、`fix/omp-magpie/usage-cache`。分支不得与发布 tag 同名。
 - 不擅自创建远程仓库、提交、推送或发布 tag。
 
 ## omp-magpie
