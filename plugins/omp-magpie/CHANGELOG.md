@@ -1,5 +1,10 @@
 # 更新记录
 
+## 0.1.2（2026-10-28）
+
+- 新建 provider 为 OpenAI Responses 和 Completions 模型逐模型声明 strict 字段支持，使 task 的 `strict: false` 可显式传递；已有 provider 仍只附加 usage，不修改模型配置。
+- 补充普通 task 参数错误的排查及已有 provider 的兼容配置说明；使用前需确认路由接受 strict，更新后完整重启 OMP。
+
 ## 0.1.1（已发布，2026-10-26）
 
 - 面板内插件生成的标签、周期和诊断统一使用英文；服务端名称与说明保留原文，更新 usage 缓存版本以重新采集。

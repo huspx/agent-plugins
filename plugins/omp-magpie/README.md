@@ -133,6 +133,8 @@ omp plugin config set omp-magpie autoAttach false
 
 新建 provider 从 Magpie 读取聊天模型、模态、reasoning、必要 token 上限与价卡，支持 Anthropic Messages、OpenAI Responses、OpenAI Completions 三种协议。已有 provider 的模型定义仍由 OMP 管理。
 
+插件新建的 provider 为 OpenAI Responses 和 OpenAI Completions 模型逐模型声明 `compat.supportsStrictMode: true`，让工具声明的 strict 值可以传给路由，例如 task 的 `strict: false`；其他工具仍可能发送 `true`。插件不设置 `toolStrictMode`，Anthropic Messages 模型不添加此 OpenAI compat 字段。已有 provider 只附加用量，不会改写其模型配置。
+
 ## 配置更新与重载
 
 `/magpie setup` 确认保存后立即应用当前会话。通过 `omp plugin config set` 在外部修改的插件设置，在会话启动或切换时重新读取；需要立即应用时可重新启动 OMP。
@@ -171,6 +173,25 @@ omp plugin config set omp-magpie autoAttach false
 ### 创建后缺少模型
 
 插件仅接入聊天模型，目录必须提供必要上下文与输出上限；缺失或无效时会给出诊断。最终模型元数据由 OMP 构造。
+
+### 普通 task 提示 `sourceSession` 或 `model` 错误
+
+先检查实际调用是否传入这些 seance 专属字段；空字符串也属于传入。部分 OpenAI-compatible backend 在请求省略工具的 strict 字段时，可能把未填写的可选参数补为空字符串，从而触发普通 task 校验错误；模型也可能自行生成错误参数，需结合实际调用判断。
+
+对于已有 provider，先确认所用 Magpie 路由接受 `strict: true` 和 `strict: false`。确认后可在 OMP 的 `models.yml` 中合并兼容配置。provider 级 `compat` 是模型的基线，逐模型 `compat` 可覆盖它；provider 的默认 API 不妨碍 Responses 模型继承该配置。如果 provider 下相关路由均支持 strict，可合并以下字段：
+
+```yaml
+providers:
+  magpie-remote:
+    compat:
+      supportsStrictMode: true
+```
+
+需要单独配置模型时，在 `models` 列表中找到对应条目，将 `compat.supportsStrictMode: true` 合并到该模型的现有 `compat` 中，保留条目的其他字段。
+
+这些片段只展示需要合并的字段，保留现有 provider、模型列表、认证和其他配置；先检查已有逐模型设置，不要覆盖有意设置的 `false`。安装或更新插件、附加 usage、执行 `/magpie setup`，以及对已有 provider 设置 `createProvider:true`，都不会重建或修复已有模型配置。修改宿主配置后完整重启 OMP。新建 provider 的声明也不能保证所有 backend 都接受 strict；如果路由拒绝该字段，应先确认路由的兼容能力。
+
+配置字段与 strict 语义可查阅 [OMP 模型配置文档（18.12.6）](https://github.com/can1357/oh-my-pi/blob/v18.12.6/docs/models.md#compatibility-and-routing-fields) 和 [OMP 工具 schema 编码约束](https://github.com/can1357/oh-my-pi/blob/v18.12.6/packages/ai/src/utils/schema/CONSTRAINTS.md)。相关现象见 [OMP #16050](https://github.com/can1357/oh-my-pi/issues/16050)（普通 task 被空 seance 字段拒绝）及 [Magpie #3055](https://github.com/yetone/magpie/issues/3055)（Responses 路由的可选参数填充）。这些报告说明特定环境中的现象，不代表所有 Magpie backend 均有相同原因。
 
 ### 配置修改未立即反映
 

@@ -1,6 +1,6 @@
 {
   "name": "omp-magpie",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Magpie 原生 OMP 额度、Key 预算与重置券库存集成",
   "type": "module",
   "license": "MIT",

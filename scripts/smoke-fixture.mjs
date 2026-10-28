@@ -24,6 +24,7 @@ export async function startFixture() {
   const results = new Map();
   const resultWaiters = new Map();
   let sequence = 0;
+  let generationSequence = 0;
   let holdKey;
   let holdEndpoint;
   let holdPrefix;
@@ -58,7 +59,7 @@ export async function startFixture() {
           heldRequests: pending.filter(item => !item.res.destroyed).map(({ row }) => ({ path: row.path, credential: row.credential })),
           aborted: requests.filter(row => row.aborted).length,
           generationPosts: requests.filter(row => row.generation).length,
-          requests: requests.map(({ path, query, credential, generation, aborted, priceHeader, marker }) => ({ path, query, credential, generation, aborted, priceHeader, marker })) });
+          requests: requests.map(({ path, query, credential, generation, aborted, priceHeader, marker, tools, model }) => ({ path, query, credential, generation, aborted, priceHeader, marker, tools, model })) });
         return;
       }
       if (url.pathname === '/__smoke/hold') {
@@ -101,12 +102,49 @@ export async function startFixture() {
         else send();
       };
       if (req.method === 'POST') {
-        if (!generationAllowed || !url.pathname.endsWith('/chat/completions')) { json(res, { error: { message: 'fixture rejects generation' } }, 405); return; }
-        for await (const _chunk of req) { /* Drain the actual host request. */ }
+        const chat = url.pathname === '/created/v1/chat/completions' || url.pathname === '/child/v1/chat/completions';
+        const responses = url.pathname === '/created/v1/responses';
+        const hook = ['/smoke-late/v1/chat/completions', '/command/v1/chat/completions'].includes(url.pathname);
+        if (!generationAllowed || (credential !== 'A' && !(hook && credential === 'B')) || (!chat && !responses && !hook)) { json(res, { error: { message: 'fixture rejects generation' } }, 405); return; }
+        let text = '';
+        for await (const chunk of req) text += chunk;
+        const body = JSON.parse(text);
+        const expectedModel = hook || url.pathname.startsWith('/child/') ? 'smoke-static' : responses ? 'smoke-responses' : 'smoke-completions';
+        if (body.model !== expectedModel) { json(res, { error: { message: 'fixture rejects unexpected model' } }, 405); return; }
+        const tools = (body.tools ?? []).map(tool => responses ? { name: tool.name, strict: tool.strict } : { name: tool.function?.name, strict: tool.function?.strict });
+        row.model = body.model;
+        row.tools = tools;
+        const child = url.pathname.startsWith('/child/');
+        const taskTool = tools.find(tool => tool.name === 'task');
+        const inputs = responses ? body.input : body.messages;
+        const last = Array.isArray(inputs) ? inputs.at(-1) : undefined;
+        const afterTask = last?.type === 'function_call_output' || last?.role === 'tool';
+        let name, args, content;
+        if (hook) content = 'fixture complete';
+        else if (child) { name = 'yield'; args = { data: 'SMOKE_CHILD_RESULT_42' };
+        } else if (!afterTask) {
+          name = 'task';
+          args = { agent: 'task', task: 'Return the fixture result.', solutionSpace: 'One fixed result.' };
+          // 模拟部分兼容网关对省略 strict 的可选字段补空字符串；显式 false 才保留原参数。
+          if (taskTool?.strict === undefined) Object.assign(args, { sourceSession: '', model: '' });
+        } else content = JSON.stringify(last).includes('SMOKE_CHILD_RESULT_42') ? 'SMOKE_PARENT_RECEIVED_42' : 'SMOKE_TASK_FAILED';
+        // 多轮 task 与协议切换会重放历史；每次生成都使用唯一的 call/response ID。
+        const generationId = ++generationSequence;
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-        const chunk = { id: 'smoke-completion', object: 'chat.completion.chunk', created: 1, model: 'smoke-static', choices: [{ index: 0, delta: { role: 'assistant', content: 'fixture complete' }, finish_reason: null }] };
-        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\n`);
+        if (responses) {
+          const emit = event => res.write(`data: ${JSON.stringify(event)}\n\n`);
+          const item = name ? { id: `fc_smoke_${generationId}`, type: 'function_call', call_id: `call_smoke_${generationId}`, name, arguments: '' } : { id: `msg_smoke_${generationId}`, type: 'message', role: 'assistant', content: [] };
+          emit({ type: 'response.created', response: { id: `resp_smoke_${generationId}` } });
+          emit({ type: 'response.output_item.added', output_index: 0, item });
+          if (name) emit({ type: 'response.function_call_arguments.delta', item_id: item.id, output_index: 0, delta: JSON.stringify(args) });
+          else emit({ type: 'response.output_text.delta', item_id: item.id, output_index: 0, content_index: 0, delta: content });
+          emit({ type: 'response.output_item.done', output_index: 0, item: name ? { ...item, arguments: JSON.stringify(args), status: 'completed' } : { ...item, content: [{ type: 'output_text', text: content, annotations: [] }], status: 'completed' } });
+          emit({ type: 'response.completed', response: { id: `resp_smoke_${generationId}`, status: 'completed', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
+        } else {
+          const chunk = { id: `smoke-completion-${generationId}`, object: 'chat.completion.chunk', created: 1, model: body.model, choices: [{ index: 0, delta: name ? { role: 'assistant', tool_calls: [{ index: 0, id: `call_smoke_${generationId}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } : { role: 'assistant', content }, finish_reason: null }] };
+          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: {}, finish_reason: name ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\n`);
+        }
         res.end('data: [DONE]\n\n');
         return;
       }

@@ -1,5 +1,9 @@
 # 更新记录
 
+## 0.1.2（2026-10-28）
+
+- 更新 omp-magpie 新建 provider 的 OpenAI 模型兼容声明，使 task 的 `strict: false` 可显式传递；已有 provider 配置仍由用户管理。
+
 ## 0.1.1（已发布，2026-10-26）
 
 - omp-magpie 面板生成文案使用英文，修复带身份探测诊断时共享 owner 租约的保留，并收紧凭据切换 smoke 的目标请求屏障。
