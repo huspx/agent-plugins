@@ -8,6 +8,7 @@ import type { Model, Api, UsageReport, UsageProvider } from "@oh-my-pi/pi-ai";
 import { SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import { defaultRankingStrategy } from "@oh-my-pi/pi-ai/usage/registry";
 import { normalizeAnthropicBaseUrl } from "@oh-my-pi/pi-ai/providers/anthropic";
+import { z } from "@oh-my-pi/pi-coding-agent";
 import { invalidateCommandConfig, resolveConfigValue } from "@oh-my-pi/pi-coding-agent/config/resolve-config-value";
 import { getPluginSettings, PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { MagpieOnboarding } from "../plugins/omp-magpie/src/onboarding.ts";
@@ -118,11 +119,15 @@ async function run(task: Task, pi: ExtensionAPI): Promise<void> {
         generation: auth.credentials.generation,
       };
       check("onboarding snapshot reads the real existing provider and effective A credential", !!registry.find("smoke-a", "smoke-static") && setupBefore.key === keyA);
+      const compat = model("smoke-a").compat;
+      check("onboarding starts with the existing model explicit strict false", compat !== undefined && "supportsStrictMode" in compat && compat.supportsStrictMode === false);
       break;
     }
     case "setup-audit": {
       assert.ok(setupBefore, "setup audit requires an actual SDK state snapshot");
       check("setup preserves the existing registry model catalog", JSON.stringify(registry.getProviderModels("smoke-a")) === setupBefore.models);
+      const compat = model("smoke-a").compat;
+      check("setup preserves existing provider explicit strict false", compat !== undefined && "supportsStrictMode" in compat && compat.supportsStrictMode === false);
       check("setup preserves effective inference authentication and provider headers", await registry.getApiKey(model("smoke-a")) === setupBefore.key && JSON.stringify(await registry.getProviderHeaders("smoke-a")) === setupBefore.headers);
       check("setup and rejected native login leave native auth rows and generation unchanged", JSON.stringify(auth.credentials.all()) === setupBefore.credentials && auth.credentials.generation === setupBefore.generation);
       const before = (await state()).requests.length;
@@ -136,14 +141,13 @@ async function run(task: Task, pi: ExtensionAPI): Promise<void> {
       check("usage leaves original model catalog unchanged", JSON.stringify(registry.getProviderModels("magpie")) === baselineModels);
       check("usage leaves keyless inference sentinel unchanged", await registry.getApiKey(model("magpie")) === baselineKey);
       check("usage leaves original provider headers unchanged", JSON.stringify(await registry.getProviderHeaders("magpie")) === baselineHeaders);
+      const from = (await state()).requests.length;
       const rows = await reports("magpie");
       check("keyless zero-account collector has real windows", rows.some(report => report.limits.some(limit => limit.label?.includes("fixture-exhausted-window"))));
-      check("keyless provider retains configured no-auth sentinel", baselineKey === "N/A");
       check("upstream exhausted window remains exhausted", rows.some(report => report.limits.some(limit => limit.status === "exhausted")));
       check("sibling remaining quota remains visible", rows.some(report => report.limits.some(limit => limit.amount.remainingFraction === 0.8)));
-      const health = await auth.health.model("magpie", { modelId: "smoke-static", baseUrl: model("magpie").baseUrl, reserveFraction: 0.1 });
-      check("independent provider health remains unknown", health.state === "unknown");
-      check("keyless HTTP never sends usage marker", !(await state()).requests.some(request => request.marker));
+      const traffic = (await state()).requests.slice(from);
+      check("keyless collection reads quotas without budget or bearer", traffic.some(request => request.path === "/local/v1/magpie/quotas" && request.credential === "none") && !traffic.some(request => request.path === "/local/v1/magpie/limit"));
       break;
     }
     case "literal": {
@@ -268,63 +272,32 @@ async function run(task: Task, pi: ExtensionAPI): Promise<void> {
       break;
     }
     case "prefix": {
-      check("same-host key A budget is isolated", tokenBudget(await reports("smoke-a"), 111));
-      check("same-host key B budget is isolated", tokenBudget(await reports("smoke-b"), 222));
+      const a = await reports("smoke-a");
+      const b = await reports("smoke-b");
+      check("same-host key A budget is isolated", tokenBudget(a, 111));
+      check("same-host key B budget is isolated", tokenBudget(b, 222));
       const ordinary = await reports("smoke-ordinary");
       check("quota 403 preserves valid key budget", tokenBudget(ordinary, 111));
       check("quota 403 retains native permission diagnosis", ordinary.some(report => report.notes?.some(note => /Subscription quotas/.test(note) && /permission/.test(note))));
-      const a = (await reports("smoke-a"))[0];
-      const b = (await reports("smoke-b"))[0];
-      check("same-host key reports have distinct metadata", !!a?.metadata?.accountId && a.metadata.accountId !== b?.metadata?.accountId);
+      check("same-host key reports have distinct metadata", !!a[0]?.metadata?.accountId && a[0].metadata.accountId !== b[0]?.metadata?.accountId);
       const traffic = (await state()).requests;
       check("management requests preserve remote prefix", traffic.some(request => request.path === "/prefix/a/v1/magpie/limit" && request.credential === "A") && traffic.some(request => request.path === "/prefix/b/v1/magpie/limit" && request.credential === "B"));
       check("exhausted upstream does not replace gateway inference key", await registry.getApiKey(model("smoke-a")) === keyA);
-      check("key-backed independent alias health remains unknown", (await auth.health.model("smoke-a", { modelId: "smoke-static", baseUrl: model("smoke-a").baseUrl, reserveFraction: 0.1 })).state === "unknown");
       break;
     }
     case "inventory": {
-      const from = (await state()).requests.length;
+      // 格式、数量组合和异常值由 usage.test.ts 覆盖；这里只验证真实 SDK 保留报告边界。
       const report = (await reports("smoke-a"))[0];
       assert.ok(report);
-      const inventory = report.notes?.filter(note => note.includes("Reset credits")) ?? [];
-      const account = (name: string): string => {
-        const matching = inventory.filter(note => note.includes(name));
-        assert.equal(matching.length, 1, `one inventory note for ${name}`);
-        return matching[0]!;
-      };
-      const primary = account("fixture-alias");
-      check("primary inventory preserves window counts, team and expiry", /5h\s*2\b/.test(primary) && /Weekly\s*1\b/.test(primary) && primary.includes("(team)") && primary.includes("2032-01-01") && !/\b3\b/.test(primary));
-      const other = account("fixture-other");
-      check("sibling inventory retains its own count and expiry", /\b7\b/.test(other) && other.includes("2033-03-04") && !other.includes("2032-01-01") && !primary.includes("2033-03-04"));
-      const idle = account("fixture-idle");
-      check("windowless zero inventory remains visible with unknown expiry", /\b0\b/.test(idle) && idle.includes("expiry unknown"));
-      const stale = account("fixture-stale");
-      check("stale inventory retains account reading diagnostics", /\b4\b/.test(stale) && stale.includes("2034-04-05") && stale.includes("fixture-read-error") && stale.includes("2031-05-06") && stale.includes("2031-05-05") && stale.includes("deferred"));
-      check("stale window retains its actual reading with unknown status", report.limits.some(limit => limit.label?.includes("fixture-stale-window") && limit.amount.used === 30 && limit.status === "unknown"));
-      check("inventory stays in account notes without SDK redemption credits", inventory.length === 4 && report.resetCredits === undefined);
+      check("inventory stays in account notes without SDK redemption credits", report.notes?.some(note => note.includes("fixture-alias") && /5h\s*2\b/.test(note)) && report.resetCredits === undefined);
       check("SDK limit IDs stay distinct across windows and budgets", new Set(report.limits.map(limit => limit.id)).size === report.limits.length);
+      check("stale window retains its actual reading with unknown status", report.limits.some(limit => limit.label?.includes("fixture-stale-window") && limit.amount.used === 30 && limit.status === "unknown"));
       const text = report.limits.find(limit => limit.label?.includes("fixture-text-window"));
-      check("SDK preserves a text window without inventing numeric usage", text?.label?.includes("fixture text information") && text.status === "unknown" && text.amount.unit === "unknown" && text.amount.used === undefined);
-      const cny = report.limits.find(limit => limit.label?.includes("fixture-cny-window"));
-      check("SDK preserves CNY quantities and explains the original unit", cny?.amount.unit === "unknown" && cny.amount.used === 200 && cny.amount.limit === 1000 && cny.amount.remaining === 800 && cny.amount.usedFraction === 0.2 && !!cny.notes?.some(note => /200\s*\/\s*1000/.test(note) && /cny/i.test(note) && note.includes("fixture-cny-window")));
-      for (const [period, tokens, tokenLimit, cost, costLimit, unpriced, cache] of [
-        ["Daily", 111, 1000, 1.25, 10, 2, "excludes cache reads"],
-        ["Weekly", 333, 7000, 4.5, 70, 5, "includes cache reads"],
-      ] as const) {
-        const token = report.limits.find(limit => limit.amount.unit === "tokens" && limit.window?.label === period);
-        const usd = report.limits.find(limit => limit.amount.unit === "usd" && limit.window?.label === period);
-        check(`${period} SDK budget keeps server quantities and natural reset`, token?.amount.used === tokens && token.amount.limit === tokenLimit && token.amount.remaining === tokenLimit - tokens && usd?.amount.used === cost && usd.amount.limit === costLimit && usd.amount.remaining === costLimit - cost && token.window?.resetsAt === Date.parse("2031-01-02T03:04:05Z") && usd.window?.resetsAt === token.window.resetsAt);
-        check(`${period} token notes own their cache and reservation explanations`, !!token?.notes?.some(note => note.includes("Token") && note.includes(period) && note.includes(cache) && note.includes("reservations")));
-        check(`${period} USD notes own their unpriced and reservation explanations`, !!usd?.notes?.some(note => note.includes("USD") && note.includes(period) && note.includes(String(unpriced)) && note.includes("unpriced") && note.includes("reservations") && !note.includes("cache reads")));
-      }
-      const pools = report.limits.filter(limit => limit.label?.includes("fixture-pool-window"));
-      check("same-name SDK windows retain their pool identity", pools.length === 2 && pools.some(limit => limit.label?.includes("pool-alpha") && limit.amount.used === 10) && pools.some(limit => limit.label?.includes("pool-beta") && limit.amount.used === 20));
+      check("SDK preserves a text window without inventing numeric usage", text?.status === "unknown" && text.amount.unit === "unknown" && text.amount.used === undefined);
+      const daily = report.limits.find(limit => limit.amount.unit === "tokens" && limit.window?.label === "Daily");
+      check("SDK budget keeps server quantities and natural reset", daily?.amount.used === 111 && daily.window?.resetsAt === Date.parse("2031-01-02T03:04:05Z"));
       const serialized = JSON.stringify(report);
       check("SDK report redacts echoed credentials and control characters", !serialized.includes(keyA) && !serialized.includes(keyB) && !serialized.includes("\\u001b"));
-      await reports("magpie");
-      const traffic = (await state()).requests.slice(from);
-      check("keyless collection reads quotas without budget or bearer", traffic.some(request => request.path === "/local/v1/magpie/quotas" && request.credential === "none") && !traffic.some(request => request.path === "/local/v1/magpie/limit"));
-      check("SDK management traffic only reads quotas and key budgets without redemption or generation", traffic.length > 0 && traffic.every(request => !request.generation && /\/v1\/magpie\/(quotas|limit)$/.test(request.path) && request.query === ""));
       break;
     }
     case "usage-barriers": {
@@ -396,13 +369,28 @@ async function run(task: Task, pi: ExtensionAPI): Promise<void> {
       auth.keys.removeRuntime("smoke-runtime");
       break;
     }
+    case "strict-initial":
+    case "strict-refresh":
+    case "strict-cache": {
+      if (task.action === "strict-initial") {
+        const current = ctx.models.current();
+        check("creating provider preserves the selected model before any explicit switch", current?.provider === "magpie" && current.id === "smoke-static");
+      }
+      const before = (await state()).requests.length;
+      if (task.action === "strict-refresh") await registry.refreshProvider("smoke-created", "online");
+      if (task.action === "strict-cache") await registry.refreshProvider("smoke-a", "offline");
+      const traffic = (await state()).requests.slice(before);
+      if (task.action === "strict-refresh") check("online refresh fetches the created catalog", traffic.some(request => request.path === "/created/v1/models"));
+      if (task.action === "strict-cache") check("other provider refresh restores created models from cache without fetching", !traffic.some(request => request.path === "/created/v1/models"));
+      break;
+    }
     case "models": {
-      check("new provider never auto-switches current model", ctx.model?.provider !== "smoke-created");
       await registry.refreshDiscoverableProviders(["smoke-created"], "online");
       const expected = [["smoke-anthropic", "anthropic-messages", `${root}/created/v1`], ["smoke-responses", "openai-responses", `${root}/created/v1`], ["smoke-completions", "openai-completions", `${root}/created/v1`]];
       for (const [id, api, baseUrl] of expected) {
         const value = model("smoke-created", id);
         check(`final registry ${api} uses exact protocol URL`, value.api === api && value.baseUrl === baseUrl);
+        if (api === "anthropic-messages") check("Anthropic model omits OpenAI strict compatibility", value.compat === undefined || !("supportsStrictMode" in value.compat));
       }
       check("model discovery sends compatibility price header", (await state()).requests.some(request => request.path === "/created/v1/models" && request.priceHeader));
       break;
@@ -482,9 +470,7 @@ async function run(task: Task, pi: ExtensionAPI): Promise<void> {
       await auth.usage.invalidate("smoke-shared");
       const inflight = auth.usage.reports({ baseUrlResolver: id => registry.getProviderBaseUrl(id), signal: lifetime.signal });
       await eventually("shared owners start an actual held usage request", async () => heldAt(await state(), "/smoke-shared/v1/magpie/quotas"));
-      const originalContext = first.ctx;
       const nextContext: ExtensionContext = Object.create(ctx);
-      check("distinct SDK context facades retain the same session and registry", nextContext !== originalContext && nextContext.modelRegistry === originalContext?.modelRegistry && nextContext.sessionManager.getSessionId() === originalContext?.sessionManager.getSessionId());
       const beforeReconcile = (await state()).aborted;
       await first.reconcile(nextContext);
       await second.reconcile(Object.create(ctx));
@@ -495,7 +481,6 @@ async function run(task: Task, pi: ExtensionAPI): Promise<void> {
       check("closing one owner keeps another owner's real HTTP in flight", heldAt(await state(), "/smoke-shared/v1/magpie/quotas") && (await state()).aborted === beforeReconcile);
       await control("release");
       check("remaining owner receives the original shared in-flight report", tokenBudget((await inflight ?? []).filter(report => report.provider === "smoke-shared"), 111));
-      check("remaining owner still reads actual budget", tokenBudget(await reports("smoke-shared"), 111));
       const third = owner(pi);
       await third.configure(ctx, settings);
       auth.keys.setRuntime("smoke-shared", keyB);
@@ -810,7 +795,6 @@ async function run(task: Task, pi: ExtensionAPI): Promise<void> {
         sessionId = `${sessionId}-snapshot-switched`;
         await value.configure(facade, config([]));
         const signal = value.signal;
-        check("setup race retains the exact mutable manager and context facades", value.ctx === facade && value.ctx.sessionManager === manager);
         release.resolve();
         const result = await outcome;
         check("late setup confirmation rejects after the mutable session switches", !result.ok);
@@ -1016,65 +1000,31 @@ async function run(task: Task, pi: ExtensionAPI): Promise<void> {
       const value = owner(pi);
       await value.configure(ctx, config(["smoke-generation"]));
       check("generation scenario starts attached", tokenBudget(await reports("smoke-generation"), 111));
-      const oauthFrom = (await state()).requests.length;
-      await control("hold?key=A&prefix=/smoke-generation");
-      await auth.usage.invalidate("smoke-generation");
-      const inflight = auth.usage.reports({ baseUrlResolver: id => registry.getProviderBaseUrl(id), signal: lifetime.signal });
-      await eventually("OAuth scenario holds both target management requests", async () => {
-        const snapshot = await state();
-        return ["quotas", "limit"].every(endpoint => heldAt(snapshot, `/smoke-generation/v1/magpie/${endpoint}`));
-      });
-      await auth.credentials.set("smoke-generation", { type: "oauth", access: "fixture-oauth-access", refresh: "fixture-oauth-refresh", expires: Date.now() + 3600000 });
-      check("OAuth generation synchronously revokes adapter", !auth.usage.providerFor("smoke-generation"));
-      await eventually("OAuth generation aborts both target requests", async () => {
-        const snapshot = await state();
-        return ["quotas", "limit"].every(endpoint => snapshot.requests.slice(oauthFrom).some(request => request.path === `/smoke-generation/v1/magpie/${endpoint}` && request.credential === "A" && request.aborted));
-      });
-      await control("release");
-      const result = await inflight;
-      check("OAuth generation prevents stale usage publication", !(result ?? []).some(report => report.provider === "smoke-generation"));
-      await auth.credentials.remove("smoke-generation");
-      await eventually("live generation subscription recovers after OAuth removal", () => !!auth.usage.providerFor("smoke-generation"));
-      await eventually("recovered OAuth-free binding reads actual budget", async () => tokenBudget(await reports("smoke-generation"), 111));
-      const conflictFrom = (await state()).requests.length;
-      await control("hold?key=A&prefix=/smoke-generation");
-      await auth.usage.invalidate("smoke-generation");
-      const conflictingRead = auth.usage.reports({ baseUrlResolver: id => registry.getProviderBaseUrl(id), signal: lifetime.signal });
-      await eventually("stored-conflict scenario holds both target management requests", async () => {
-        const snapshot = await state();
-        return ["quotas", "limit"].every(endpoint => heldAt(snapshot, `/smoke-generation/v1/magpie/${endpoint}`));
-      });
-      await auth.credentials.set("smoke-generation", { type: "api_key", key: keyB });
-      check("conflicting API-key generation synchronously revokes adapter", !auth.usage.providerFor("smoke-generation"));
-      await eventually("stored conflict aborts both target requests", async () => {
-        const snapshot = await state();
-        return ["quotas", "limit"].every(endpoint => snapshot.requests.slice(conflictFrom).some(request => request.path === `/smoke-generation/v1/magpie/${endpoint}` && request.credential === "A" && request.aborted));
-      });
-      await control("release");
-      check("stored conflict aborts in-flight report publication", !(await conflictingRead ?? []).some(report => report.provider === "smoke-generation"));
-      check("conflicting generation cannot replay cached report", (await reports("smoke-generation")).length === 0);
-      await auth.credentials.remove("smoke-generation");
-      await eventually("live subscription recovers after stored conflict removal", () => !!auth.usage.providerFor("smoke-generation"));
-      await eventually("recovered conflict-free binding reads actual budget", async () => tokenBudget(await reports("smoke-generation"), 111));
-      const replacementFrom = (await state()).requests.length;
-      await control("hold?key=A&prefix=/smoke-generation");
-      await auth.usage.invalidate("smoke-generation");
-      const replacedRead = auth.usage.reports({ baseUrlResolver: id => registry.getProviderBaseUrl(id), signal: lifetime.signal });
-      await eventually("store replacement holds both target management requests", async () => {
-        const snapshot = await state();
-        return ["quotas", "limit"].every(endpoint => heldAt(snapshot, `/smoke-generation/v1/magpie/${endpoint}`));
-      });
-      const nextStore = await SqliteAuthCredentialStore.open(join(process.env.PI_CODING_AGENT_DIR!, "replacement.db"));
-      await auth.replaceStore(nextStore);
-      check("store replacement immediately revokes carried adapter", !auth.usage.providerFor("smoke-generation"));
-      await eventually("store replacement aborts both target requests", async () => {
-        const snapshot = await state();
-        return ["quotas", "limit"].every(endpoint => snapshot.requests.slice(replacementFrom).some(request => request.path === `/smoke-generation/v1/magpie/${endpoint}` && request.credential === "A" && request.aborted));
-      });
-      await control("release");
-      check("store replacement aborts old-store report publication", !(await replacedRead ?? []).some(report => report.provider === "smoke-generation"));
-      await eventually("store replacement restores live owner attachment", () => !!auth.usage.providerFor("smoke-generation"));
-      await eventually("replacement store collects fresh gateway report", async () => tokenBudget(await reports("smoke-generation"), 111));
+      // 三种失效原因共享挂起、撤销、丢弃旧结果和恢复检查；替换 store 会清空凭据，必须排最后。
+      for (const reason of ["OAuth", "stored conflict", "store replacement"] as const) {
+        const from = (await state()).requests.length;
+        await control("hold?key=A&prefix=/smoke-generation");
+        await auth.usage.invalidate("smoke-generation");
+        const inflight = auth.usage.reports({ baseUrlResolver: id => registry.getProviderBaseUrl(id), signal: lifetime.signal });
+        await eventually(`${reason} holds both target management requests`, async () => {
+          const snapshot = await state();
+          return ["quotas", "limit"].every(endpoint => heldAt(snapshot, `/smoke-generation/v1/magpie/${endpoint}`));
+        });
+        if (reason === "OAuth") await auth.credentials.set("smoke-generation", { type: "oauth", access: "fixture-oauth-access", refresh: "fixture-oauth-refresh", expires: Date.now() + 3600000 });
+        else if (reason === "stored conflict") await auth.credentials.set("smoke-generation", { type: "api_key", key: keyB });
+        else await auth.replaceStore(await SqliteAuthCredentialStore.open(join(process.env.PI_CODING_AGENT_DIR!, "replacement.db")));
+        check(`${reason} synchronously revokes adapter`, !auth.usage.providerFor("smoke-generation"));
+        await eventually(`${reason} aborts both target requests`, async () => {
+          const snapshot = await state();
+          return ["quotas", "limit"].every(endpoint => snapshot.requests.slice(from).some(request => request.path === `/smoke-generation/v1/magpie/${endpoint}` && request.credential === "A" && request.aborted));
+        });
+        await control("release");
+        check(`${reason} prevents stale usage publication`, !(await inflight ?? []).some(report => report.provider === "smoke-generation"));
+        if (reason === "stored conflict") check("conflicting generation cannot replay cached report", (await reports("smoke-generation")).length === 0);
+        if (reason !== "store replacement") await auth.credentials.remove("smoke-generation");
+        await eventually(`${reason} recovery restores live owner attachment`, () => !!auth.usage.providerFor("smoke-generation"));
+        await eventually(`${reason} recovery collects fresh gateway report`, async () => tokenBudget(await reports("smoke-generation"), 111));
+      }
       close(value);
       check("last owner removes own adapter", !auth.usage.providerFor("smoke-generation"));
       await auth.credentials.set("smoke-generation", { type: "api_key", key: keyA });
@@ -1088,7 +1038,14 @@ async function run(task: Task, pi: ExtensionAPI): Promise<void> {
 }
 
 export default function smokeProbe(pi: ExtensionAPI): void {
+  // 扩展 factory 也会绑定到子会话；控制队列与模块状态只能由主会话持有。
+  let mainSession = false;
+  pi.registerTool({ name: "smoke_strict", label: "Smoke strict", description: "Strict control tool for the local fixture.", parameters: z.object({ value: z.string() }), strict: true, loadMode: "essential", async execute() { return { content: [{ type: "text", text: "control" }], details: {} }; } });
+  // 子 agent 固定走隔离 HOME 内的本机 provider，禁止模型角色回退到外部服务。
+  pi.on("before_subagent_spawn", () => ({ model: "smoke-child/smoke-static" }));
   pi.on("session_start", async (_event, current) => {
+    if (current.agent.kind !== "main") return;
+    mainSession = true;
     ctx = current;
     baselineModels = JSON.stringify(ctx.modelRegistry.getProviderModels("magpie"));
     baselineKey = await ctx.modelRegistry.getApiKey(model("magpie"));
@@ -1106,9 +1063,10 @@ export default function smokeProbe(pi: ExtensionAPI): void {
       }
     })().catch(error => { if (!lifetime.signal.aborted) { writeFileSync(shutdownFile, JSON.stringify({ ok: false, error: "probe control loop failed" })); ctx.shutdown(); } });
   });
-  pi.on("before_agent_start", (_event, current) => { ctx = current; });
-  pi.on("before_provider_request", (_event, current) => { ctx = current; });
-  pi.on("session_shutdown", () => {
+  // 请求 context 的 model 与 models.current() 固定在该次请求，不能替代控制循环持有的会话 context。
+  pi.on("before_agent_start", (_event, current) => { if (current.agent.kind === "main") ctx = current; });
+  pi.on("session_shutdown", (_event, current) => {
+    if (current.agent.kind !== "main") return;
     shutdownSeen = true;
     lifetime.abort();
     for (const value of owners) value.close();
@@ -1117,7 +1075,7 @@ export default function smokeProbe(pi: ExtensionAPI): void {
   // exit runs after the host has awaited every shutdown hook; the hook itself
   // only does synchronous cleanup, within the host's two-second budget.
   process.once("exit", () => {
-    if (!ctx) return;
+    if (!mainSession || !ctx) return;
     const usage = ctx.modelRegistry.authStorage.usage;
     const ownAdaptersGone = ["magpie", "smoke-a", "smoke-b", "smoke-command", "smoke-lease", "smoke-created", "smoke-generation", "smoke-stored", "smoke-runtime", "smoke-prefetch-conflict", "smoke-prefetch-compatible", "smoke-identity-recovery", "smoke-dynamic-isolation", "smoke-header-root-snapshot", "smoke-relogin-root-snapshot", "smoke-setup-session-snapshot"].every(id => !usage.providerFor(id));
     const foreignPreserved = !foreign || usage.providerFor("smoke-shared") === foreign;

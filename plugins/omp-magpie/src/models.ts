@@ -171,6 +171,8 @@ export function mapCatalog(payload: unknown, root: string,
 		result.models.push({
 			// OMP 的 Anthropic transport 自行去掉末尾 /v1；统一版本化 endpoint 可保留本身以 /v1 结尾的代理 prefix。
 			id, name, api, baseUrl: `${root}/v1`,
+			// 自定义网关的保守检测会省略 strict；显式声明支持，才能保留 task 的 strict:false，避免部分 backend 补齐可选参数。
+			...(api === "openai-responses" || api === "openai-completions" ? { compat: { supportsStrictMode: true } } : {}),
 			reasoning: row.reasoning === true,
 			...(api !== "anthropic-messages" && supported.length > 0 ? { thinking: { mode: "effort" as const, efforts: supported } } : {}),
 			input, contextWindow, maxTokens,

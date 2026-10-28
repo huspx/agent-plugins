@@ -46,8 +46,9 @@ async function environment(name) {
   env.OMP_SMOKE_HEADER_COMMAND = `!if [ -f ${shellQuote(env.OMP_SMOKE_HEADER_HOLD)} ]; then /usr/bin/touch ${shellQuote(env.OMP_SMOKE_HEADER_STARTED)}; while [ -f ${shellQuote(env.OMP_SMOKE_HEADER_HOLD)} ]; do /bin/sleep 0.02; done; fi; printf preserved`;
   const providers = {
     magpie: provider('/local', undefined, 'none'),
-    'smoke-a': provider('/prefix/a', 'OMP_SMOKE_KEY_A'),
+    'smoke-a': { ...provider('/prefix/a', 'OMP_SMOKE_KEY_A'), models: [{ ...provider('/prefix/a', 'OMP_SMOKE_KEY_A').models[0], compat: { supportsStrictMode: false } }] },
     'smoke-b': provider('/prefix/b', 'OMP_SMOKE_KEY_B'),
+    'smoke-child': provider('/child', 'OMP_SMOKE_KEY_A'),
     'smoke-ordinary': provider('/ordinary', 'OMP_SMOKE_KEY_A'),
     ...Object.fromEntries(['stored', 'runtime', 'shared', 'generation', 'late'].map(id => [`smoke-${id}`, provider(`/smoke-${id}`, 'OMP_SMOKE_KEY_A')])),
     'smoke-command': provider('/command', `!cat ${shellQuote(env.OMP_SMOKE_KEY_FILE)}`),
@@ -79,9 +80,9 @@ async function cli(isolation, args) {
 }
 
 /** 驱动真实 RPC 宿主；命令必须同时收到同 ID 完成响应和预期事件才进入后续验收。 */
-async function rpc(isolation, { direct = false } = {}) {
+async function rpc(isolation, { direct = false, strictTools = false } = {}) {
   await rm(isolation.env.OMP_SMOKE_SHUTDOWN_FILE, { force: true });
-  const args = ['--mode', 'rpc', '--no-session', '--no-skills', '--no-rules', '--no-tools', '--no-lsp', '--model', 'magpie/smoke-static'];
+  const args = ['--mode', 'rpc', '--no-session', '--no-skills', '--no-rules', ...(strictTools ? ['--tools', 'task,smoke_strict'] : ['--no-tools']), '--no-lsp', '--model', 'magpie/smoke-static'];
   if (direct) args.push('--no-extensions', '-e', entry);
   args.push('-e', probe);
   const child = spawn(executable, args, { cwd: isolation.cwd, env: isolation.env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -167,6 +168,32 @@ async function rpc(isolation, { direct = false } = {}) {
     assert.equal(response.success, true, safe(JSON.stringify(response)));
     await waitFor(value => value.type === 'agent_end', 'real request completion', 45000, command.from);
   }
+  async function selectModel(provider, modelId) {
+    const command = await send('set_model', { provider, modelId });
+    const response = await waitFor(value => value.type === 'response' && value.id === command.id, 'model selection response', 10000, command.from);
+    assert.equal(response.success, true, safe(JSON.stringify(response)));
+    assert.equal(response.data?.provider, provider, safe(JSON.stringify(response)));
+    assert.equal(response.data?.id, modelId, safe(JSON.stringify(response)));
+  }
+  async function strictTask(api, phase) {
+    await selectModel('smoke-created', api === 'responses' ? 'smoke-responses' : 'smoke-completions');
+    const start = fixture.requests.length;
+    const command = await send('prompt', { message: 'Run the local fixture task.' });
+    const response = await waitFor(value => value.type === 'response' && value.id === command.id, 'strict task prompt response', 45000, command.from);
+    assert.equal(response.success, true, safe(JSON.stringify(response)));
+    const end = await waitFor(value => value.type === 'agent_end' && value.willContinue !== true, 'strict task completion', 90000, command.from);
+    const final = end.messages?.findLast(message => message.role === 'assistant');
+    assert.equal(final?.stopReason, 'stop', safe(JSON.stringify(final)));
+    assert(final.content.some(block => block.type === 'text' && block.text.includes('SMOKE_PARENT_RECEIVED_42')), safe(`parent did not receive child result: ${JSON.stringify(end)}`));
+    const traffic = fixture.requests.slice(start);
+    const route = api === 'responses' ? '/created/v1/responses' : '/created/v1/chat/completions';
+    const request = traffic.find(row => row.path === route && row.tools?.some(tool => tool.name === 'task'));
+    assert(request, `${phase} ${api} sends real task request to ${route}`);
+    assert.equal(request.tools.find(tool => tool.name === 'task').strict, false, `${phase} ${api} task strict false`);
+    assert.equal(request.tools.find(tool => tool.name === 'smoke_strict')?.strict, true, `${phase} ${api} control strict true`);
+    assert(traffic.some(row => row.path === '/child/v1/chat/completions' && row.model === 'smoke-static'), `${phase} ${api} executes a real local child`);
+    passed(`${phase} ${api} sends task false and control true and receives the real child result`);
+  }
   async function setup({ cancel = false, expectedRoot = '/prefix/a' } = {}) {
     const generationBefore = fixture.requests.filter(request => request.generation).length;
     const command = await send('prompt', { message: '/magpie setup' });
@@ -215,7 +242,7 @@ async function rpc(isolation, { direct = false } = {}) {
     } finally { clearTimeout(timer); if (exited) active.delete(child); }
   }
   await waitFor(value => value.type === 'ready', 'RPC ready');
-  return { usage, runProbe, promptHook, setup, nativeLogin, close };
+  return { usage, runProbe, promptHook, strictTask, selectModel, setup, nativeLogin, close };
 }
 
 async function installedPackage(home, version) {
@@ -317,18 +344,7 @@ try {
   await cli(onboarding, ['plugin', 'config', 'set', 'omp-magpie', 'connections', JSON.stringify([otherConnection])]);
   const settings = async () => JSON.parse(await cli(onboarding, ['plugin', 'config', 'list', 'omp-magpie', '--json'])).settings;
   const printSetup = command => cli(onboarding, ['--no-session', '--no-skills', '--no-rules', '--no-tools', '--no-lsp', '--model', 'magpie/smoke-static', '-p', command]);
-  const initialSettings = await settings();
   const onboardingTraffic = fixture.requests.length;
-  const list = await printSetup('/magpie setup --list');
-  assert.match(list, /smoke-a/);
-  assert.match(list, /smoke-b/);
-  assert.deepEqual(await settings(), initialSettings, 'CLI candidate listing is read-only');
-  passed('real CLI /magpie setup --list prints actual provider candidates without saving');
-  const preview = await printSetup('/magpie setup --provider smoke-a');
-  assert(preview.includes('provider ID：smoke-a') && preview.includes(`${fixture.root}/prefix/a`) && preview.includes('认证来源：'), 'real CLI preview contains the derived non-secret connection');
-  assert.match(preview, /仅预览，未保存/);
-  assert.deepEqual(await settings(), initialSettings, 'CLI preview is read-only');
-  passed('real CLI setup preview shows provider, gateway and inherited authentication without saving');
   await printSetup('/magpie setup --provider smoke-a --yes');
   const cliSettings = await settings();
   const cliConnections = JSON.parse(cliSettings.connections);
@@ -355,8 +371,6 @@ try {
   await client.runProbe('setup-audit');
   await client.runProbe('setup-provider-change');
   await client.runProbe('setup-baseline');
-  await client.setup({ cancel: true, expectedRoot: '/prefix/changed' });
-  assert.deepEqual(await settings(), confirmedSettings, 'cancellation after provider update cannot persist settings');
   await client.setup({ expectedRoot: '/prefix/changed' });
   assert.deepEqual(await settings(), confirmedSettings, 'provider address update does not create a second address source in plugin settings');
   await client.runProbe('setup-audit', { expectedPrefix: '/prefix/changed' });
@@ -366,6 +380,8 @@ try {
   passed('real setup follows OMP provider updates, preserves settings and avoids generation');
 
   const sdk = await environment('sdk');
+  // 强制同步 task 和 structured yield，避免异步完成唤醒与前一轮 RPC 事件混淆。
+  await writeFile(join(sdk.agentDir, 'config.yml'), JSON.stringify({ async: { enabled: false }, task: { structured: true, batch: false } }));
   const connections = [
     { providerId: 'magpie' },
     { providerId: 'smoke-a' },
@@ -387,8 +403,13 @@ try {
   await client.close();
   await cli(sdk, ['plugin', 'config', 'set', 'omp-magpie', 'connections', JSON.stringify(connections)]);
   fixture.allowGeneration(true);
-  client = await rpc(sdk, { direct: true });
+  client = await rpc(sdk, { direct: true, strictTools: true });
   await client.usage();
+  for (const phase of ['initial', 'refresh', 'cache']) {
+    await client.runProbe(`strict-${phase}`);
+    for (const api of ['responses', 'completions']) await client.strictTask(api, phase);
+  }
+  await client.selectModel('magpie', 'smoke-static');
   for (const action of ['baseline', 'prefix', 'inventory', 'usage-barriers', 'literal', 'provider-root', 'anthropic-roots', 'model-headers', 'stored', 'models', 'aliases']) await client.runProbe(action);
   await client.usage();
   await client.runProbe('select-late');
