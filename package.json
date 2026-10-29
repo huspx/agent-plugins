@@ -3,16 +3,19 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "format": "dprint fmt --config dprint.json --config-discovery=false",
+    "format:check": "dprint check --config dprint.json --config-discovery=false",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/omp-magpie/*.test.ts",
     "check:package": "node scripts/check-package.mjs",
     "smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {
-    "@oh-my-pi/pi-coding-agent": "18.12.6",
     "@oh-my-pi/pi-ai": "18.12.6",
-    "typescript": "7.0.2",
+    "@oh-my-pi/pi-coding-agent": "18.12.6",
+    "@types/bun": "1.4.4",
     "@types/node": "26.6.5",
-    "@types/bun": "1.4.4"
+    "dprint": "0.64.3",
+    "typescript": "7.0.2"
   }
 }

@@ -51,6 +51,23 @@
 - 注释与代码同步更新，修正失效描述，清理失去对应代码的注释。
 - 注释使用简体中文，标识符与技术术语保留 English；TypeScript/JavaScript 文档注释使用 `/** ... */`，局部注释沿用所在文件的格式。
 
+## 代码格式化
+
+- 修改前阅读本指南及适用规范，沿用附近代码的实现方式；Formatter 只统一排版，不决定业务实现。
+- 当前 TypeScript、JavaScript 模块和 JSON 由 dprint 独占格式化职责。文件范围、排除规则及统一的格式参数集中维护在根 [dprint.json](dprint.json)，不按路径覆盖风格；CLI 版本由根开发依赖和 lockfile 固定，Wasm 插件版本由配置固定，不使用个人全局配置。
+- 可执行入口只在根 [package.json](package.json) 的 `format` 和 `format:check` 中维护。先按下文安装开发依赖，再在仓库根执行；两者都显式指定项目配置并禁用其他配置发现。
+
+```sh
+npm run format -- plugins/omp-magpie/src/config.ts
+npm run format:check -- plugins/omp-magpie/src/config.ts
+```
+
+- 修改后优先传入本次新增或修改的文件，不无参数执行写入命令、不顺带重排其他文件。检查只读且发现格式差异时失败；不传文件的 `format:check` 检查整个配置范围，可用于盘点历史差异，不自动修复。
+- 未规定的换行等细节沿用固定插件默认值；不得自行更换 Formatter、通过 CLI 覆盖项目参数，或引入 dprint Exec（包括间接调用）。编辑器如启用保存格式化，应使用项目安装的 dprint 和根配置，关闭同一文件上的其他保存格式化，避免与命令入口重复处理。
+- 沿用 `.gitignore` 和 dprint 自带的依赖目录排除；生成的 lockfile 另由配置排除，不手工格式化。新增构建产物、缓存或第三方文件时，按其真实归属维护忽略规则，不用忽略注释或排除规则掩盖格式化失败。
+- 当前没有独立 Lint、有效提交 Hook、编辑器工作区设置或 CI workflow，本次不另建一套；未来接入自动检查时调用同一 npm 检查入口。格式化不替代下文的类型检查、单元测试、包检查及必要的行为验收。
+- Markdown、文档代码块和代码字符串中的嵌入内容不在本次格式化范围。当前不存在独立 SQL 或其他待接入语言文件，不额外安装插件；将来出现时先核对官方支持及已有语言工具链，再明确唯一 Formatter，SQL 还须确认实际数据库 dialect，不接入 PowerShell 格式化。
+
 ## 仓库与分发
 
 - [marketplace.json](.omp-plugin/marketplace.json) 定义 marketplace；插件放在 `plugins/<插件名>/`，每个插件自包含。

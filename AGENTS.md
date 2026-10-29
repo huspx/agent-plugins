@@ -4,7 +4,7 @@
 
 ## 必须阅读
 
-- 开始修改前，必须阅读并遵循 [CONTRIBUTING.md](CONTRIBUTING.md)，包括编码、注释、仓库分发、插件工程边界和适用的验证要求。
+- 开始修改前，必须阅读并遵循 [CONTRIBUTING.md](CONTRIBUTING.md)，包括编码、注释、[代码格式化](CONTRIBUTING.md#代码格式化)、仓库分发、插件工程边界和适用的验证要求。
 - 涉及版本号、CHANGELOG、发布分支、tag 或 GitHub Release 时，还必须阅读并遵循 [RELEASING.md](RELEASING.md)。
 - 涉及用户可见行为时，阅读对应插件 README，确保实现、限制和使用说明一致。
 

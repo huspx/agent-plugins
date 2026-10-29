@@ -1,6 +1,6 @@
 {
   "name": "huspx-agent-plugins",
-  "owner": {"name": "huspx"},
+  "owner": { "name": "huspx" },
   "plugins": [
     {
       "name": "omp-magpie",

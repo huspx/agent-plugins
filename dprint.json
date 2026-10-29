@@ -1,0 +1,14 @@
+{
+  "useTabs": false,
+  "indentWidth": 2,
+  "newLineKind": "lf",
+  "typescript": {
+    "quoteStyle": "preferSingle"
+  },
+  "includes": ["**/*.{ts,mjs,json}"],
+  "excludes": ["**/package-lock.json"],
+  "plugins": [
+    "npm:@dprint/typescript@0.96.1",
+    "npm:@dprint/json@0.25.2"
+  ]
+}
